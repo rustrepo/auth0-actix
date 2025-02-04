@@ -1,13 +1,12 @@
 use actix_web::{web, App, HttpResponse, HttpServer, Responder, delete, get, post, put};
 use darkbird::document::{Document, FullText, Indexer, MaterializedView, Range, RangeField, Tags};
 use darkbird::{Storage, StorageType, Options};
-use mongodb::{bson::{doc, oid::ObjectId, Document as BsonDocument}, options::{ClientOptions, FindOptions}, Client, Collection};
+use mongodb::{bson::{doc, oid::ObjectId, Document as BsonDocument}, options::ClientOptions, Client, Collection};
 use serde::{Serialize, Deserialize};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use std::env;
 use dotenv::dotenv;
-use futures::stream::StreamExt;
 
 type Pid = String;
 
@@ -16,7 +15,6 @@ struct User {
     fullname: String,
 }
 
-// Required Document trait implementations for Darkbird
 impl Document for User {}
 
 impl Indexer for User {
@@ -50,8 +48,8 @@ impl FullText for User {
 }
 
 struct AppState {
-    cache: Arc<Storage<Pid, User>>,  // Darkbird cache
-    mongo_collection: Arc<Mutex<Collection<BsonDocument>>>,  // MongoDB collection
+    cache: Arc<Storage<Pid, User>>,  
+    mongo_collection: Arc<Mutex<Collection<BsonDocument>>>,  
 }
 
 #[post("/users")]
@@ -64,12 +62,11 @@ async fn create_user(data: web::Data<AppState>, user: web::Json<User>) -> impl R
         "fullname": &user.fullname 
     };
 
-    let mongo_res = data.mongo_collection.lock().await.insert_one(user_doc, None).await;
-    if mongo_res.is_err() {
+    if data.mongo_collection.lock().await.insert_one(user_doc, None).await.is_err() {
         return HttpResponse::InternalServerError().body("Error saving to MongoDB");
     }
 
-    if let Err(_) = data.cache.insert(pid.clone(), user).await {
+    if data.cache.insert(pid.clone(), user).await.is_err() {
         return HttpResponse::InternalServerError().body("Error caching user in Darkbird");
     }
 
@@ -85,9 +82,7 @@ async fn get_user(data: web::Data<AppState>, pid: web::Path<String>) -> impl Res
     }
 
     let filter = doc! { "_id": &pid };
-    let user_doc = data.mongo_collection.lock().await.find_one(filter, None).await.unwrap();
-
-    if let Some(user_doc) = user_doc {
+    if let Some(user_doc) = data.mongo_collection.lock().await.find_one(filter, None).await.unwrap() {
         if let Ok(user) = bson::from_document::<User>(user_doc) {
             let _ = data.cache.insert(pid.clone(), user.clone()).await;
             return HttpResponse::Ok().json(user);
@@ -95,6 +90,40 @@ async fn get_user(data: web::Data<AppState>, pid: web::Path<String>) -> impl Res
     }
 
     HttpResponse::NotFound().body("User not found")
+}
+
+#[put("/users/{pid}")]
+async fn update_user(data: web::Data<AppState>, pid: web::Path<String>, user: web::Json<User>) -> impl Responder {
+    let pid = pid.into_inner();
+    let user = user.into_inner();
+    let filter = doc! { "_id": &pid };
+    let update = doc! { "$set": { "fullname": &user.fullname } };
+
+    if data.mongo_collection.lock().await.update_one(filter.clone(), update, None).await.is_err() {
+        return HttpResponse::InternalServerError().body("Error updating MongoDB");
+    }
+    
+    if data.cache.insert(pid.clone(), user.clone()).await.is_err() {
+        return HttpResponse::InternalServerError().body("Error updating cache in Darkbird");
+    }
+
+    HttpResponse::Ok().json("User updated successfully")
+}
+
+#[delete("/users/{pid}")]
+async fn delete_user(data: web::Data<AppState>, pid: web::Path<String>) -> impl Responder {
+    let pid = pid.into_inner();
+    let filter = doc! { "_id": &pid };
+
+    if data.mongo_collection.lock().await.delete_one(filter, None).await.is_err() {
+        return HttpResponse::InternalServerError().body("Error deleting from MongoDB");
+    }
+    
+    if data.cache.remove(pid).await.is_err() {
+        return HttpResponse::InternalServerError().body("Error removing from cache in Darkbird");
+    }
+
+    HttpResponse::Ok().json("User deleted successfully")
 }
 
 #[tokio::main]
@@ -125,6 +154,8 @@ async fn main() -> std::io::Result<()> {
             .app_data(app_state.clone())
             .service(create_user)
             .service(get_user)
+            .service(update_user)
+            .service(delete_user)
     })
     .bind("127.0.0.1:8080")?
     .run()
