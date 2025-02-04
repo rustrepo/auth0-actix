@@ -1,4 +1,4 @@
-use actix_web::{web, App, HttpResponse, HttpServer, Responder, delete, get, post, put};
+use actix_web::{HttpRequest, web, App, HttpResponse, HttpServer, Responder, delete, get, post, put};
 use darkbird::document::{Document, FullText, Indexer, MaterializedView, Range, RangeField, Tags};
 use darkbird::{Storage, StorageType, Options};
 use mongodb::{bson::{doc, oid::ObjectId, Document as BsonDocument}, options::ClientOptions, Client, Collection};
@@ -7,6 +7,11 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use std::env;
 use dotenv::dotenv;
+use actix_web::http::header::HeaderMap;
+use base64::engine::general_purpose::STANDARD as base64_engine;
+use base64::Engine;
+
+
 
 type Pid = String;
 
@@ -52,8 +57,37 @@ struct AppState {
     mongo_collection: Arc<Mutex<Collection<BsonDocument>>>,  
 }
 
+fn check_auth(headers: &HeaderMap) -> bool {
+
+    let envusername = env::var("USERNAME").expect("USERNAME not set");
+    let envpassword = env::var("PASSWORD").expect("PASSWORD not set");
+
+    if let Some(auth_header) = headers.get("Authorization") {
+        if let Ok(auth_str) = auth_header.to_str() {
+            if auth_str.starts_with("Basic ") {
+                let encoded = auth_str.trim_start_matches("Basic ");
+                if let Ok(decoded) = base64_engine.decode(encoded) {
+                    if let Ok(credentials) = String::from_utf8(decoded) {
+                        let parts: Vec<&str> = credentials.split(':').collect();
+                        if parts.len() == 2 {
+                            let username = parts[0];
+                            let password = parts[1];
+                            return username == &envusername && password == &envpassword;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
 #[post("/users")]
-async fn create_user(data: web::Data<AppState>, user: web::Json<User>) -> impl Responder {
+async fn create_user(data: web::Data<AppState>, user: web::Json<User>, req: HttpRequest) -> impl Responder {
+    if !check_auth(req.headers()) {
+        return HttpResponse::Unauthorized().body("Unauthorized");
+    }
+
     let pid = ObjectId::new().to_hex();
     let user = user.into_inner();
     
@@ -74,7 +108,11 @@ async fn create_user(data: web::Data<AppState>, user: web::Json<User>) -> impl R
 }
 
 #[get("/users/{pid}")]
-async fn get_user(data: web::Data<AppState>, pid: web::Path<String>) -> impl Responder {
+async fn get_user(data: web::Data<AppState>, pid: web::Path<String>, req: HttpRequest) -> impl Responder {
+    if !check_auth(req.headers()) {
+        return HttpResponse::Unauthorized().body("Unauthorized");
+    }
+
     let pid = pid.into_inner();
 
     if let Some(user_ref) = data.cache.lookup(&pid) {
@@ -93,7 +131,11 @@ async fn get_user(data: web::Data<AppState>, pid: web::Path<String>) -> impl Res
 }
 
 #[put("/users/{pid}")]
-async fn update_user(data: web::Data<AppState>, pid: web::Path<String>, user: web::Json<User>) -> impl Responder {
+async fn update_user(data: web::Data<AppState>, pid: web::Path<String>, user: web::Json<User>, req: HttpRequest) -> impl Responder {
+    if !check_auth(req.headers()) {
+        return HttpResponse::Unauthorized().body("Unauthorized");
+    }
+
     let pid = pid.into_inner();
     let user = user.into_inner();
     let filter = doc! { "_id": &pid };
@@ -111,7 +153,11 @@ async fn update_user(data: web::Data<AppState>, pid: web::Path<String>, user: we
 }
 
 #[delete("/users/{pid}")]
-async fn delete_user(data: web::Data<AppState>, pid: web::Path<String>) -> impl Responder {
+async fn delete_user(data: web::Data<AppState>, pid: web::Path<String>, req: HttpRequest) -> impl Responder {
+    if !check_auth(req.headers()) {
+        return HttpResponse::Unauthorized().body("Unauthorized");
+    }
+
     let pid = pid.into_inner();
     let filter = doc! { "_id": &pid };
 

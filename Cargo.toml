@@ -14,3 +14,6 @@ uuid = { version = "1", features = ["v4"] }
 dotenv = "0.15.0"
 bson = "2.0"
 futures = "0.3"
+jsonwebtoken = "9.2"   # For JWT authentication
+chrono = { version = "0.4", features = ["serde"] }
+base64 = "0.22.1"
