@@ -17,3 +17,4 @@ futures = "0.3"
 jsonwebtoken = "9.2"   # For JWT authentication
 chrono = { version = "0.4", features = ["serde"] }
 base64 = "0.22.1"
+reqwest = { version = "0.11", features = ["json"] }

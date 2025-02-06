@@ -8,8 +8,12 @@ use tokio::sync::Mutex;
 use std::env;
 use dotenv::dotenv;
 use actix_web::http::header::HeaderMap;
-use base64::engine::general_purpose::STANDARD as base64_engine;
-use base64::Engine;
+//use base64::engine::general_purpose::STANDARD as base64_engine;
+//use base64::Engine;
+use jsonwebtoken::{decode, DecodingKey, Validation, Algorithm};
+//use reqwest::{Url, Response};
+use std::collections::HashMap;
+
 
 
 
@@ -57,37 +61,61 @@ struct AppState {
     mongo_collection: Arc<Mutex<Collection<BsonDocument>>>,  
 }
 
-fn check_auth(headers: &HeaderMap) -> bool {
 
-    let envusername = env::var("USERNAME").expect("USERNAME not set");
-    let envpassword = env::var("PASSWORD").expect("PASSWORD not set");
 
+#[derive(Debug, Serialize, Deserialize)]
+struct Claims {
+    sub: String,
+    exp: usize,
+    // Add other claims as needed
+}
+
+async fn validate_token(token: &str) -> Result<Claims, String> {
+    let domain = env::var("AUTH0_DOMAIN").expect("AUTH0_DOMAIN not set");
+    let audience = env::var("AUTH0_AUDIENCE").expect("AUTH0_AUDIENCE not set");
+
+    let jwks_url = format!("https://{}/.well-known/jwks.json", domain);
+    let jwks: HashMap<String, serde_json::Value> = reqwest::get(&jwks_url)
+        .await
+        .map_err(|_| "Failed to fetch JWKS".to_string())?
+        .json()
+        .await
+        .map_err(|_| "Failed to parse JWKS".to_string())?;
+
+    let jwk = jwks.get("keys").and_then(|keys| keys.get(0)).ok_or("No keys found in JWKS".to_string())?;
+    let n = jwk.get("n").and_then(|n| n.as_str()).ok_or("Invalid key format".to_string())?;
+    let e = jwk.get("e").and_then(|e| e.as_str()).ok_or("Invalid key format".to_string())?;
+
+    let decoding_key = DecodingKey::from_rsa_components(n, e).map_err(|_| "Invalid key components".to_string())?;
+
+    let mut validation = Validation::new(Algorithm::RS256);
+    validation.set_audience(&[audience]);
+
+    decode::<Claims>(token, &decoding_key, &validation)
+        .map(|data| data.claims)
+        .map_err(|err| format!("Invalid token: {}", err))
+}
+
+async fn check_auth(headers: &HeaderMap) -> bool {
     if let Some(auth_header) = headers.get("Authorization") {
         if let Ok(auth_str) = auth_header.to_str() {
-            if auth_str.starts_with("Basic ") {
-                let encoded = auth_str.trim_start_matches("Basic ");
-                if let Ok(decoded) = base64_engine.decode(encoded) {
-                    if let Ok(credentials) = String::from_utf8(decoded) {
-                        let parts: Vec<&str> = credentials.split(':').collect();
-                        if parts.len() == 2 {
-                            let username = parts[0];
-                            let password = parts[1];
-                            return username == &envusername && password == &envpassword;
-                        }
-                    }
-                }
+            if auth_str.starts_with("Bearer ") {
+                let token = auth_str.trim_start_matches("Bearer ");
+                return validate_token(token).await.is_ok();
             }
         }
     }
     false
 }
 
+
 #[post("/users")]
 async fn create_user(data: web::Data<AppState>, user: web::Json<User>, req: HttpRequest) -> impl Responder {
-    if !check_auth(req.headers()) {
+    if !check_auth(req.headers()).await {
         return HttpResponse::Unauthorized().body("Unauthorized");
     }
 
+    // Rest of the function remains the same
     let pid = ObjectId::new().to_hex();
     let user = user.into_inner();
     
@@ -109,10 +137,11 @@ async fn create_user(data: web::Data<AppState>, user: web::Json<User>, req: Http
 
 #[get("/users/{pid}")]
 async fn get_user(data: web::Data<AppState>, pid: web::Path<String>, req: HttpRequest) -> impl Responder {
-    if !check_auth(req.headers()) {
+    if !check_auth(req.headers()).await {
         return HttpResponse::Unauthorized().body("Unauthorized");
     }
 
+    // Rest of the function remains the same
     let pid = pid.into_inner();
 
     if let Some(user_ref) = data.cache.lookup(&pid) {
@@ -132,10 +161,11 @@ async fn get_user(data: web::Data<AppState>, pid: web::Path<String>, req: HttpRe
 
 #[put("/users/{pid}")]
 async fn update_user(data: web::Data<AppState>, pid: web::Path<String>, user: web::Json<User>, req: HttpRequest) -> impl Responder {
-    if !check_auth(req.headers()) {
+    if !check_auth(req.headers()).await {
         return HttpResponse::Unauthorized().body("Unauthorized");
     }
 
+    // Rest of the function remains the same
     let pid = pid.into_inner();
     let user = user.into_inner();
     let filter = doc! { "_id": &pid };
@@ -154,10 +184,11 @@ async fn update_user(data: web::Data<AppState>, pid: web::Path<String>, user: we
 
 #[delete("/users/{pid}")]
 async fn delete_user(data: web::Data<AppState>, pid: web::Path<String>, req: HttpRequest) -> impl Responder {
-    if !check_auth(req.headers()) {
+    if !check_auth(req.headers()).await {
         return HttpResponse::Unauthorized().body("Unauthorized");
     }
 
+    // Rest of the function remains the same
     let pid = pid.into_inner();
     let filter = doc! { "_id": &pid };
 
